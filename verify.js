@@ -5,6 +5,7 @@ var decode            = require('./decode');
 var timespan          = require('./lib/timespan');
 var jws               = require('jws');
 var xtend             = require('xtend');
+var jwe = require('./lib/jwe');
 
 module.exports = function (jwtString, secretOrPublicKey, options, callback) {
   if ((typeof options === 'function') && !callback) {
@@ -45,68 +46,95 @@ module.exports = function (jwtString, secretOrPublicKey, options, callback) {
 
   var parts = jwtString.split('.');
 
-  if (parts.length !== 3){
-    return done(new JsonWebTokenError('jwt malformed'));
-  }
+  if (parts.length === 3) {
+		var hasSignature = parts[2].trim() !== '';
 
-  var hasSignature = parts[2].trim() !== '';
+		if (!hasSignature && secretOrPublicKey) {
+			return done(new JsonWebTokenError('jwt signature is required'));
+		}
 
-  if (!hasSignature && secretOrPublicKey){
-    return done(new JsonWebTokenError('jwt signature is required'));
-  }
+		if (hasSignature && !secretOrPublicKey) {
+			return done(new JsonWebTokenError('secret or public key must be provided'));
+		}
 
-  if (hasSignature && !secretOrPublicKey) {
-    return done(new JsonWebTokenError('secret or public key must be provided'));
-  }
+		if (!hasSignature && !options.algorithms) {
+			options.algorithms = ['none'];
+		}
 
-  if (!hasSignature && !options.algorithms) {
-    options.algorithms = ['none'];
-  }
+		if (!options.algorithms) {
+			options.algorithms = ~secretOrPublicKey.toString().indexOf('BEGIN CERTIFICATE') ||
+				~secretOrPublicKey.toString().indexOf('BEGIN PUBLIC KEY') ? ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512'] :
+				~secretOrPublicKey.toString().indexOf('BEGIN RSA PUBLIC KEY') ? ['RS256', 'RS384', 'RS512'] : ['HS256', 'HS384', 'HS512'];
 
-  if (!options.algorithms) {
-    options.algorithms = ~secretOrPublicKey.toString().indexOf('BEGIN CERTIFICATE') ||
-                         ~secretOrPublicKey.toString().indexOf('BEGIN PUBLIC KEY') ?
-                          [ 'RS256','RS384','RS512','ES256','ES384','ES512' ] :
-                         ~secretOrPublicKey.toString().indexOf('BEGIN RSA PUBLIC KEY') ?
-                          [ 'RS256','RS384','RS512' ] :
-                          [ 'HS256','HS384','HS512' ];
+		}
 
-  }
+    var decodedToken;
+		try {
+			decodedToken = jws.decode(jwtString);
+		} catch (err) {
+			return done(err);
+		}
 
-  var decodedToken;
-  try {
-    decodedToken = jws.decode(jwtString);
-  } catch(err) {
-    return done(err);
-  }
+		if (!decodedToken) {
+			return done(new JsonWebTokenError('invalid token'));
+		}
 
-  if (!decodedToken) {
-    return done(new JsonWebTokenError('invalid token'));
-  }
+		var header = decodedToken.header;
 
-  var header = decodedToken.header;
+		if (!~options.algorithms.indexOf(header.alg)) {
+			return done(new JsonWebTokenError('invalid algorithm'));
+		}
 
-  if (!~options.algorithms.indexOf(header.alg)) {
-    return done(new JsonWebTokenError('invalid algorithm'));
-  }
+		var valid;
 
-  var valid;
+		try {
+			valid = jws.verify(jwtString, header.alg, secretOrPublicKey);
+		} catch (e) {
+			return done(e);
+		}
 
-  try {
-    valid = jws.verify(jwtString, header.alg, secretOrPublicKey);
-  } catch (e) {
-    return done(e);
-  }
+		if (!valid)
+			return done(new JsonWebTokenError('invalid signature'));
 
-  if (!valid)
-    return done(new JsonWebTokenError('invalid signature'));
+		var payload;
 
-  var payload;
+		try {
+			payload = decode(jwtString);
+		} catch (err) {
+			return done(err);
+		}
 
-  try {
-    payload = decode(jwtString);
-  } catch(err) {
-    return done(err);
+	} else if (parts.length === 5) {
+
+		var hasAuthenticationTag = parts[4].trim() !== '';
+
+		var hasCipherText = parts[3].trim() !== '';
+
+		if (!hasAuthenticationTag && hasCipherText) {
+			return done(new JsonWebTokenError('jwe authentication tag is required'));
+		}
+
+		if (hasAuthenticationTag && !hasCipherText) {
+			return done(new JsonWebTokenError('jwe cipher text is required'));
+		}
+
+		//validate encryption algorithm
+
+		try {
+			parsedTokenData = jwe.parse(parts).verify(secretOrPublicKey);
+
+			if (parsedTokenData.error) {
+				return done(new JsonWebTokenError(parsedTokenData.error.message));
+			}
+
+			payload = parsedTokenData.payload;
+
+		} catch (e) {
+			return done(e);
+		}
+
+	} else {
+		return done(new JsonWebTokenError('jwt malformed'));
   }
 
   if (typeof payload.nbf !== 'undefined' && !options.ignoreNotBefore) {

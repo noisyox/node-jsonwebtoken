@@ -8,12 +8,21 @@ var isNumber = require('lodash.isnumber');
 var isPlainObject = require('lodash.isplainobject');
 var isString = require('lodash.isstring');
 var once = require('lodash.once');
+var jwe = require('./lib/jwe');
 
 var sign_options_schema = {
   expiresIn: { isValid: function(value) { return isInteger(value) || isString(value); }, message: '"expiresIn" should be a number of seconds or string representing a timespan' },
   notBefore: { isValid: function(value) { return isInteger(value) || isString(value); }, message: '"notBefore" should be a number of seconds or string representing a timespan' },
   audience: { isValid: function(value) { return isString(value) || Array.isArray(value); }, message: '"audience" must be a string or array' },
   algorithm: { isValid: includes.bind(null, ['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512', 'HS256', 'HS384', 'HS512', 'none']), message: '"algorithm" must be a valid string enum value' },
+  encrypt_algorithm: {
+		isValid: includes.bind(null, ['RSA-OAEP', 'A128KW', 'A192KW', 'A256KW', 'PBES2-HS256+A128KW', 'PBES2-HS384+A192KW', 'PBES2-HS512+A256KW']),
+		message: '"encryption algorithm" must be a valid string enum value'
+	},
+	encrypt: {
+		isValid: includes.bind(null, ['A128CBC-HS256', 'A192CBC-HS384', 'A256CBC-HS512', 'A128GCM', 'A192GCM', 'A256GCM', 'none']),
+		message: '"algorithm" must be a valid string enum value'
+	},
   header: { isValid: isPlainObject, message: '"header" must be an object' },
   encoding: { isValid: isString, message: '"encoding" must be a string' },
   issuer: { isValid: isString, message: '"issuer" must be a string' },
@@ -49,6 +58,12 @@ function validate(schema, allowUnknown, object, parameterName) {
 }
 
 function validateOptions(options) {
+  //swap algorithm keys with the encrytion algorithm keys
+  if (options.encrypt) {
+		sign_options_schema.algorithm = sign_options_schema.encrypt_algorithm;
+		delete sign_options_schema.encrypt_algorithm
+  }
+  
   return validate(sign_options_schema, false, options, 'options');
 }
 
@@ -84,11 +99,20 @@ module.exports = function (payload, secretOrPrivateKey, options, callback) {
   var isObjectPayload = typeof payload === 'object' &&
                         !Buffer.isBuffer(payload);
 
-  var header = xtend({
-    alg: options.algorithm || 'HS256',
-    typ: isObjectPayload ? 'JWT' : undefined,
-    kid: options.keyid
-  }, options.header);
+  if (options.encrypt) {
+    var header = xtend({
+      alg: options.algorithm,
+      enc: options.encrypt,
+      typ: isObjectPayload ? 'JWE' : undefined,
+      kid: options.keyid
+    }, options.header);
+  } else {
+    var header = xtend({
+      alg: options.algorithm || 'HS256',
+      typ: isObjectPayload ? 'JWT' : undefined,
+      kid: options.keyid
+    }, options.header);
+  }
 
   function failure(err) {
     if (callback) {
@@ -171,18 +195,40 @@ module.exports = function (payload, secretOrPrivateKey, options, callback) {
   var encoding = options.encoding || 'utf8';
 
   if (typeof callback === 'function') {
-    callback = callback && once(callback);
-
-    jws.createSign({
-      header: header,
-      privateKey: secretOrPrivateKey,
-      payload: payload,
-      encoding: encoding
-    }).once('error', callback)
-      .once('done', function (signature) {
-        callback(null, signature);
-      });
-  } else {
-    return jws.sign({header: header, payload: payload, secret: secretOrPrivateKey, encoding: encoding});
-  }
+		callback = callback && once(callback);
+		if (options.encrypt) {
+			return jwe.generate(
+				header,
+				payload,
+				secretOrPrivateKey,
+				function (err, signature) {
+					callback(null, signature);
+				})
+		} else {
+			jws.createSign({
+					header: header,
+					privateKey: secretOrPrivateKey,
+					payload: payload,
+					encoding: encoding
+				}).once('error', callback)
+				.once('done', function (signature) {
+					callback(null, signature);
+				});
+		}
+	} else {
+		if (options.encrypt) {
+			return jwe.generate(
+				options.algorithm,
+				options.encrypt,
+				payload,
+				secretOrPrivateKey);
+		} else {
+			return jws.sign({
+				header: header,
+				payload: payload,
+				secret: secretOrPrivateKey,
+				encoding: encoding
+			});
+		}
+	}
 };
