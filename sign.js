@@ -60,8 +60,8 @@ function validate(schema, allowUnknown, object, parameterName) {
 function validateOptions(options) {
   //swap algorithm keys with the encrytion algorithm keys
   if (options.encrypt) {
-		sign_options_schema.algorithm = sign_options_schema.encrypt_algorithm;
-		delete sign_options_schema.encrypt_algorithm
+    options.encrypt_algorithm = options.algorithm;
+    delete options.algorithm
   }
   
   return validate(sign_options_schema, false, options, 'options');
